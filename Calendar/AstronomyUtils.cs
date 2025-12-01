@@ -337,7 +337,7 @@ public class AstronomyUtils
     /// <summary>
     /// 日出/日落 搜索（太阳专用）
     /// </summary>
-    private static RiseSetResult FindSunRiseSet(double _julianDay,
+    public static RiseSetResult FindSunRiseSet(double _julianDay,
                                                 double _latitudeDegree,
                                                 double _longitudeDegree,
                                                 bool _isRise,
@@ -371,7 +371,7 @@ public class AstronomyUtils
             if (_isRise)
             {
                 // 升起：从低于标准高度 → 高于标准高度
-                if (_prevTime < _standardAltitudeDegree && _alt >= _standardAltitudeDegree) { _crossed = true; }
+                if (_altPrev < _standardAltitudeDegree && _alt >= _standardAltitudeDegree) { _crossed = true; }
             }
             else
             {

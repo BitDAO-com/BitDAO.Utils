@@ -211,6 +211,20 @@ public class StandardTime
     public static StandardTime PrevNewMoon(double _julianDay) => NearestNewMoon(_julianDay - SynodicMonth);
     public StandardTime PrevNewMoon() => PrevNewMoon(this.ToJulianDay());
 
+    public StandardTime Sunrise(double _latitudeDegree, double _longitudeDegree)
+    {
+        double _jd = this.ToJulianDay();
+        AstronomyUtils.RiseSetResult _result = AstronomyUtils.FindSunRiseSet(_jd, _latitudeDegree, _longitudeDegree, true, -0.833);
+        return new StandardTime(_result.JulianDay, this.TimezoneOffset);
+    }
+
+    public StandardTime Sunset(double _latitudeDegree, double _longitudeDegree)
+    {
+        double _jd = this.ToJulianDay();
+        AstronomyUtils.RiseSetResult _result = AstronomyUtils.FindSunRiseSet(_jd, _latitudeDegree, _longitudeDegree, false, -0.833);
+        return new StandardTime(_result.JulianDay, this.TimezoneOffset);
+    }
+
     public int CompareTo(StandardTime _other)
     {
         if (_other is null) { return 1; }
