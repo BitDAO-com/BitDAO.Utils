@@ -11,11 +11,20 @@ public class StandardTime
 
     public StandardTime(double _julianDay, double _timezoneOffset = 0.0)
     {
+        _julianDay += _timezoneOffset / 24.0;
+
         double _zf = _julianDay + 0.5;
         int _z = (int)Math.Floor(_zf);  // 整数部分
         double _f = _zf - _z;           // 小数部分
 
         int _a = _z;
+        // 修复: 增加格里高利历修正 (JD >= 2299161 对应 1582年10月15日之后)
+        if (_z >= 2299161)
+        {
+            int _alpha = (int)((_z - 1867216.25) / 36524.25);
+            _a = _z + 1 + _alpha - (_alpha / 4);
+        }
+
         int _b = _a + 1524;
         int _c = (int)((_b - 122.1) / 365.25);
         int _d = (int)(365.25 * _c);
@@ -45,13 +54,10 @@ public class StandardTime
         this.Year = _year;
         this.Month = _month;
         this.Day = _day;
-
         this.Hour = _hour;
         this.Minute = _minute;
         this.Second = _second;
-
         this.TimezoneOffset = _timezoneOffset;
-        this.AddSeconds(this.TimezoneOffset * 3600.0);
     }
 
     public StandardTime(int _year, int _month, int _day, int _hour, int _minute, int _second, double _timezoneOffset = 0.0)
@@ -165,17 +171,10 @@ public class StandardTime
 
     public double ToJulianDay()
     {
-        double _totalSeconds = this.Hour * 3600.0 + this.Minute * 60.0 + this.Second - this.TimezoneOffset * 3600.0;
-        long _dayDelta = (long)Math.Floor(_totalSeconds / 86400.0);
-        double _remainderSeconds = _totalSeconds - _dayDelta * 86400.0;
-        double _dayFraction = _remainderSeconds / 86400.0; // in [0,1)
-
-        StandardTime _date = this.AddDays((int)_dayDelta);
-
-        long _year = _date.Year;
+        long _year = this.Year;
         if (_year <= 0) { _year += 1; }
 
-        long _month = _date.Month;
+        long _month = this.Month;
         if (_month <= 2) { _year -= 1; _month += 12; }
 
         long _a = _year / 100;
@@ -183,9 +182,10 @@ public class StandardTime
 
         double _julianDay = Math.Floor(365.25 * (_year + 4716))
                     + Math.Floor(30.6001 * (_month + 1))
-                    + _date.Day + _b - 1524.5;
+                    + this.Day + _b - 1524.5;
 
-        return _julianDay + _dayFraction;
+        double _totalSeconds = this.Hour * 3600.0 + this.Minute * 60.0 + this.Second - this.TimezoneOffset * 3600.0;
+        return _julianDay + _totalSeconds / 86400.0;
     }
 
     public long ToJulianSecond(bool _fromJ2000 = true)
@@ -194,11 +194,22 @@ public class StandardTime
         return _fromJ2000 ? (long)Math.Round((_jd - 2451545.0) * 86400.0) : (long)Math.Round(_jd * 86400.0);
     }
 
-    public StandardTime NearestNewMoon()
+    public StandardTime NearestNewMoon() => NearestNewMoon(this.ToJulianDay());
+
+    public static StandardTime NearestNewMoon(double _julianDay)
     {
-        double _prevNewMoonJD = CalendarUtils.CalculateNewMoonJulianDay(this.ToJulianDay());
-        return new StandardTime(_prevNewMoonJD, this.TimezoneOffset);
+        double _newMoon = AstronomyUtils.CalculateNewMoonJulianDay(_julianDay);
+        StandardTime _time = new(_newMoon);
+        //if (_time.Second >= 30) { _time = _time.AddMinutes(1); }
+        //_time.Second = 0;
+        return _time;
     }
+
+    public static StandardTime NextNewMoon(double _julianDay) => NearestNewMoon(_julianDay + SynodicMonth);
+    public StandardTime NextNewMoon() => NextNewMoon(this.ToJulianDay());
+
+    public static StandardTime PrevNewMoon(double _julianDay) => NearestNewMoon(_julianDay - SynodicMonth);
+    public StandardTime PrevNewMoon() => PrevNewMoon(this.ToJulianDay());
 
     public int CompareTo(StandardTime _other)
     {
