@@ -26,10 +26,12 @@ public class AstronomyUtils
         public double Altitude;  // degrees
     }
 
+    public enum SunMoonEventType { Rise, Set, Transit }
+
     /// <summary>
-    /// 升起/落下 事件结果
+    /// 升起/落下/中天 事件结果
     /// </summary>
-    public struct RiseSetResult
+    public struct SunMoonEventResult
     {
         /// <summary>
         /// 是否在当天发生（高纬地区可能不存在日出或日落）
@@ -45,6 +47,11 @@ public class AstronomyUtils
         /// 事件瞬间的水平坐标（主要看 Azimuth）
         /// </summary>
         public HorizontalPosition Position;
+
+        /// <summary>
+        /// 事件类型
+        /// </summary>
+        public SunMoonEventType Type;
     }
     #endregion
 
@@ -333,55 +340,109 @@ public class AstronomyUtils
     #endregion
     #endregion
 
-    #region 日出 / 日落 专用
+    #region 日出 / 日落 / 中天 专用
     /// <summary>
-    /// 日出/日落 搜索（太阳专用）
+    /// 内部通用查找逻辑
     /// </summary>
-    public static RiseSetResult FindSunRiseSet(double _julianDay,
-                                                double _latitudeDegree,
-                                                double _longitudeDegree,
-                                                bool _isRise,
-                                                double _standardAltitudeDegree)
+    public static SunMoonEventResult CalculateSunEvent(SunMoonEventType _type,
+                                                        double _julianDay,
+                                                        double _latitudeDegree,
+                                                        double _longitudeDegree,
+                                                        double _standardAltitudeDegree = 0.0)
     {
-        double _step = 1.0 / 24.0; // 每小时扫一次
+        // 扩大搜索范围，防止漏掉跨天事件，通常搜当天 0点到24点
+        // _julianDay 应该是当天的起始 JD
+        double _step = 20.0 / 60.0 / 24.0; // 每20分钟扫一次，足够捕获事件
         double _start = _julianDay;
         double _end = _julianDay + 1.0;
 
         double _latRadian = Degree2Radian(_latitudeDegree);
-        double _lonDegree = _longitudeDegree; // 东经为正
+        double _lonDegree = _longitudeDegree;
 
-        // 定义一个委托：给定时间 → 当前太阳高度
         double altitudeFunc(double _t) => GetSunAltitude(_t, _latRadian, _lonDegree);
 
         double _prevTime = _start;
         double _altPrev = altitudeFunc(_prevTime);
 
-        RiseSetResult _result = new()
+        SunMoonEventResult _result = new()
         {
             IsValid = false,
             JulianDay = double.NaN,
-            Position = new HorizontalPosition { Azimuth = double.NaN, Altitude = double.NaN }
+            Position = new HorizontalPosition { Azimuth = double.NaN, Altitude = double.NaN },
+            Type = _type,
         };
 
+        if (_type == SunMoonEventType.Transit)
+        {
+            #region 上中天计算
+            // 对于中天计算，我们需要记录最高点
+            // 简单的黄金分割搜索或三分法求极值，或者利用时角 H=0 的特性
+            // 这里为了复用现有结构，我们先用简单的扫描+精细化
+            // 中天时刻大约在地方视恒星时 = 赤经 时发生，或者简单地找高度角最大值
+
+            // 更高效的方法：直接估算中天时刻
+            // 中天时刻 T ≈ α - Θ0 - L (简化公式)
+            // 这里我们用扫描法找最大高度作为初值，然后三分法精确定位
+            double _maxAlt = -90.0;
+            double _maxTime = -1.0;
+
+            // 粗扫
+            for (double _t = _start; _t <= _end; _t += 1.0 / 24.0) // 每小时
+            {
+                double _alt = altitudeFunc(_t);
+                if (_alt > _maxAlt)
+                {
+                    _maxAlt = _alt;
+                    _maxTime = _t;
+                }
+            }
+
+            if (_maxTime > 0)
+            {
+                // 在粗扫峰值附近精搜 (三分法)
+                double _left = _maxTime - 2.0 / 24.0;
+                double _right = _maxTime + 2.0 / 24.0;
+                for (int i = 0; i < 50; i++)
+                {
+                    double _m1 = _left + (_right - _left) / 3.0;
+                    double _m2 = _right - (_right - _left) / 3.0;
+
+                    if (altitudeFunc(_m1) < altitudeFunc(_m2)) { _left = _m1; } else { _right = _m2; }
+                }
+                double _transitTime = (_left + _right) / 2.0;
+
+                EquatorialPosition _eq = CalculateSunEquatorialPosition(_transitTime);
+                HorizontalPosition _pos = EquatorialToHorizontal(_transitTime, _latitudeDegree, _longitudeDegree, _eq);
+
+                _result.IsValid = true;
+                _result.JulianDay = _transitTime;
+                _result.Position = _pos;
+                return _result;
+            }
+            return _result;
+            #endregion
+        }
+
+        #region 升起/落下 计算
         for (double _t = _start + _step; _t <= _end; _t += _step)
         {
             double _alt = altitudeFunc(_t);
             bool _crossed = false;
 
-            if (_isRise)
+            if (_type == SunMoonEventType.Rise)
             {
-                // 升起：从低于标准高度 → 高于标准高度
+                // 升起：从低变高，穿过标准线
                 if (_altPrev < _standardAltitudeDegree && _alt >= _standardAltitudeDegree) { _crossed = true; }
             }
-            else
+            else if (_type == SunMoonEventType.Set)
             {
-                // 落下：从高于标准高度 → 低于标准高度
+                // 落下：从高变低，穿过标准线
                 if (_altPrev > _standardAltitudeDegree && _alt <= _standardAltitudeDegree) { _crossed = true; }
             }
 
             if (_crossed)
             {
-                double _eventTime = BinarySearchAltitude(_prevTime, _t, altitudeFunc, _standardAltitudeDegree, _isRise);
+                double _eventTime = BinarySearchAltitude(_prevTime, _t, altitudeFunc, _standardAltitudeDegree, _type == SunMoonEventType.Rise);
 
                 EquatorialPosition _eq = CalculateSunEquatorialPosition(_eventTime);
                 HorizontalPosition _pos = EquatorialToHorizontal(_eventTime, _latitudeDegree, _longitudeDegree, _eq);
@@ -395,6 +456,7 @@ public class AstronomyUtils
             _altPrev = _alt;
             _prevTime = _t;
         }
+        #endregion
 
         return _result;
     }
@@ -409,13 +471,13 @@ public class AstronomyUtils
 
     #region 月出 / 月落 专用
     /// <summary>
-    /// 月出/月落 搜索（月亮专用）
+    /// 月出/月落/中天 搜索（月亮专用）
     /// </summary>
-    private static RiseSetResult FindMoonRiseSet(double _julianDay,
-                                                 double _latitudeDegree,
-                                                 double _longitudeDegree,
-                                                 bool _isRise,
-                                                 double _standardAltitudeDegree)
+    public static SunMoonEventResult CalculateMoonEvent(SunMoonEventType _type,
+                                                      double _julianDay,
+                                                      double _latitudeDegree,
+                                                      double _longitudeDegree,
+                                                      double _standardAltitudeDegree = 0.0)
     {
         double _step = 1.0 / 24.0; // 每小时扫一次
         double _start = _julianDay;
@@ -424,37 +486,130 @@ public class AstronomyUtils
         double _latRadian = Degree2Radian(_latitudeDegree);
         double _lonDegree = _longitudeDegree; // 东经为正
 
-        double _altitudeFunc(double _t) => GetMoonAltitude(_t, _latRadian, _lonDegree);
+        // 预计算 Delta T (假设一天内变化不大，取中间值或起始值)
+        // 严格来说应该对每个时刻计算，但效率考虑取常数也可，这里我们为了精度在 GetMoonAltitude 内部计算
+        // 或者这里算一次传入。Delta T 变化极慢（一年变化 < 1秒），取 start 即可。
+        double _deltaTSeconds = EstimateDeltaT(_start);
+        double _deltaT = _deltaTSeconds / 86400.0; // Delta T in Days
 
-        double _prevTime = _start;
-        double _altPrev = _altitudeFunc(_prevTime);
+        double _altitudeFunc(double _t) => GetMoonAltitude(_t, _deltaT, _latRadian, _lonDegree);
 
-        RiseSetResult _result = new()
+        // 动态标准高度计算函数
+        // _standardAltitudeDegree 此时作为基础修正项（主要是 -Dip），
+        // 我们需要加上 (Parallax - Refraction - SemiDiameter)
+        // Parallax 和 SemiDiameter 随距离变化
+        double _targetAltitudeFunc(double _t)
+        {
+            if (_type == SunMoonEventType.Transit) return 0.0;
+
+            double _dist = GetMoonDistance(_t + _deltaT); // 使用 TT 计算距离
+            double _parallaxRad = Math.Asin(6378.14 / _dist);
+            double _sdRad = 0.272481 * _parallaxRad;
+
+            double _parallax = Radian2Degree(_parallaxRad);
+            double _sd = Radian2Degree(_sdRad);
+            double _refraction = 34.0 / 60.0; // 0.5667度
+
+            // h0 = Parallax - Refraction - SemiDiameter
+            // Target = h0 + (-Dip passed in _standardAltitudeDegree)
+            return (_parallax - _refraction - _sd) + _standardAltitudeDegree;
+        }
+
+        SunMoonEventResult _result = new()
         {
             IsValid = false,
             JulianDay = double.NaN,
-            Position = new HorizontalPosition { Azimuth = double.NaN, Altitude = double.NaN }
+            Position = new HorizontalPosition { Azimuth = double.NaN, Altitude = double.NaN },
+            Type = _type,
         };
+
+        if (_type == SunMoonEventType.Transit)
+        {
+            #region 上中天计算
+            double _maxAlt = -90.0;
+            double _maxTime = -1.0;
+
+            // 粗扫
+            for (double _t = _start; _t <= _end; _t += _step)
+            {
+                double _alt = _altitudeFunc(_t);
+                if (_alt > _maxAlt)
+                {
+                    _maxAlt = _alt;
+                    _maxTime = _t;
+                }
+            }
+
+            if (_maxTime > 0)
+            {
+                // 在粗扫峰值附近精搜 (三分法)
+                double _left = _maxTime - _step;
+                double _right = _maxTime + _step;
+                for (int i = 0; i < 50; i++)
+                {
+                    double _m1 = _left + (_right - _left) / 3.0;
+                    double _m2 = _right - (_right - _left) / 3.0;
+
+                    if (_altitudeFunc(_m1) < _altitudeFunc(_m2)) { _left = _m1; } else { _right = _m2; }
+                }
+                double _transitTime = (_left + _right) / 2.0;
+
+                EquatorialPosition _eq = CalculateMoonEquatorialPosition(_transitTime + _deltaT); // Use TT
+                HorizontalPosition _pos = EquatorialToHorizontal(_transitTime, _latitudeDegree, _longitudeDegree, _eq); // Use UT for LST
+
+                _result.IsValid = true;
+                _result.JulianDay = _transitTime;
+                _result.Position = _pos;
+                return _result;
+            }
+            return _result;
+            #endregion
+        }
+
+        double _prevTime = _start;
+        double _altPrev = _altitudeFunc(_prevTime);
+        double _targetPrev = _targetAltitudeFunc(_prevTime);
 
         for (double _t = _start + _step; _t <= _end; _t += _step)
         {
             double _alt = _altitudeFunc(_t);
+            double _target = _targetAltitudeFunc(_t);
 
             bool _crossed = false;
-            if (_isRise)
+            if (_type == SunMoonEventType.Rise)
             {
-                if (_altPrev < _standardAltitudeDegree && _alt >= _standardAltitudeDegree) { _crossed = true; }
+                // 比较 (Alt - Target) 的符号
+                if ((_altPrev - _targetPrev) < 0 && (_alt - _target) >= 0) { _crossed = true; }
             }
-            else
+            else if (_type == SunMoonEventType.Set)
             {
-                if (_altPrev > _standardAltitudeDegree && _alt <= _standardAltitudeDegree) { _crossed = true; }
+                if ((_altPrev - _targetPrev) > 0 && (_alt - _target) <= 0) { _crossed = true; }
             }
 
             if (_crossed)
             {
-                double _eventTime = BinarySearchAltitude(_altPrev, _t, _altitudeFunc, _standardAltitudeDegree, _isRise);
-                EquatorialPosition _eq = CalculateMoonEquatorialPosition(_eventTime);
-                HorizontalPosition _pos = EquatorialToHorizontal(_eventTime, _latitudeDegree, _longitudeDegree, _eq);
+                double _t1 = _prevTime;
+                double _t2 = _t;
+
+                for (int i = 0; i < 50; i++)
+                {
+                    double _tm = 0.5 * (_t1 + _t2);
+                    double _am = _altitudeFunc(_tm);
+                    double _tam = _targetAltitudeFunc(_tm);
+
+                    if (_type == SunMoonEventType.Rise)
+                    {
+                        if (_am >= _tam) { _t2 = _tm; } else { _t1 = _tm; }
+                    }
+                    else
+                    {
+                        if (_am <= _tam) { _t2 = _tm; } else { _t1 = _tm; }
+                    }
+                }
+                double _eventTime = 0.5 * (_t1 + _t2);
+
+                EquatorialPosition _eq = CalculateMoonEquatorialPosition(_eventTime + _deltaT); // Use TT
+                HorizontalPosition _pos = EquatorialToHorizontal(_eventTime, _latitudeDegree, _longitudeDegree, _eq); // Use UT
 
                 _result.IsValid = true;
                 _result.JulianDay = _eventTime;
@@ -464,15 +619,18 @@ public class AstronomyUtils
 
             _altPrev = _alt;
             _prevTime = _t;
+            _targetPrev = _target; // 更新 TargetPrev
         }
 
         return _result;
     }
 
-    private static double GetMoonAltitude(double _julianDay, double _latRadian, double _lonDegree)
+    private static double GetMoonAltitude(double _julianDayUt, double _deltaT, double _latRadian, double _lonDegree)
     {
-        EquatorialPosition _eq = CalculateMoonEquatorialPosition(_julianDay);
-        HorizontalPosition _hor = EquatorialToHorizontal(_julianDay, Radian2Degree(_latRadian), _lonDegree, _eq);
+        // 核心修正：位置计算使用力学时 (TT = UT + DeltaT)
+        EquatorialPosition _eq = CalculateMoonEquatorialPosition(_julianDayUt + _deltaT);
+        // 坐标转换（恒星时）使用世界时 (UT)
+        HorizontalPosition _hor = EquatorialToHorizontal(_julianDayUt, Radian2Degree(_latRadian), _lonDegree, _eq);
         return _hor.Altitude;
     }
     #endregion
@@ -566,16 +724,22 @@ public class AstronomyUtils
     #region 月亮位置（赤经 / 赤纬）
     /// <summary>
     /// 月亮地心赤经 / 赤纬（度）
+    /// 传入参数应为力学时 (TT)，以保证轨道计算准确
+    /// 返回视位置（包含章动）
     /// </summary>
-    private static EquatorialPosition CalculateMoonEquatorialPosition(double _julianDay)
+    private static EquatorialPosition CalculateMoonEquatorialPosition(double _julianDayTT)
     {
-        double _t = (_julianDay - 2451545.0) / 36525.0;
+        double _t = (_julianDayTT - 2451545.0) / 36525.0;
 
         // D, M', F 用于计算黄纬
         double _d = 297.8501921 + 445267.1114034 * _t
                   - 0.0018819 * _t * _t
                   + _t * _t * _t / 545868.0
                   - _t * _t * _t * _t / 113065000.0;
+
+        double _m = 357.5291092 + 35999.0502909 * _t
+                  - 0.0001536 * _t * _t
+                  + _t * _t * _t / 24490000.0;
 
         double _m_prime = 134.9633964 + 477198.8675055 * _t
                         + 0.0087414 * _t * _t
@@ -588,29 +752,46 @@ public class AstronomyUtils
                   + _t * _t * _t * _t / 863310000.0;
 
         _d = NormalizeDegrees(_d);
+        _m = NormalizeDegrees(_m);
         _m_prime = NormalizeDegrees(_m_prime);
         _f = NormalizeDegrees(_f);
 
         double _d_radian = Degree2Radian(_d);
+        double _m_radian = Degree2Radian(_m);
         double _m_prime_radian = Degree2Radian(_m_prime);
         double _f_radian = Degree2Radian(_f);
 
-        double _lambda = GetMoonEclipticLongitude(_julianDay);
-        _lambda = NormalizeDegrees(_lambda);
-        double _lambdaRadian = Degree2Radian(_lambda);
+        // 几何黄经
+        double _lambda = GetMoonEclipticLongitude(_julianDayTT);
 
-        // 简化黄纬公式
-        double _beta = 5.128 * Math.Sin(_f_radian)
-                     + 0.280 * Math.Sin(_m_prime_radian + _f_radian)
-                     + 0.277 * Math.Sin(_m_prime_radian - _f_radian)
-                     + 0.173 * Math.Sin(2 * _d_radian - _f_radian)
-                     + 0.055 * Math.Sin(2 * _d_radian + _f_radian)
-                     + 0.046 * Math.Sin(2 * _d_radian - _m_prime_radian + _f_radian);
+        // 计算章动修正
+        (double _dPsi, double _dEpsilon) = GetNutation(_julianDayTT);
+
+        // 视黄经 = 几何黄经 + 章动
+        double _lambdaApparent = _lambda + _dPsi;
+
+        _lambdaApparent = NormalizeDegrees(_lambdaApparent);
+        double _lambdaRadian = Degree2Radian(_lambdaApparent);
+
+        // 黄纬计算 (Meeus Table 47.A)
+        double _sumB = 0.0;
+        for (int i = 0; i < MoonLatitudeData.GetLength(0); i++)
+        {
+            int _c_d = MoonLatitudeData[i, 0];
+            int _c_m = MoonLatitudeData[i, 1];
+            int _c_m_prime = MoonLatitudeData[i, 2];
+            int _c_f = MoonLatitudeData[i, 3];
+            int _b = MoonLatitudeData[i, 4];   // 单位: 10^-6 度
+
+            double _arg = _c_d * _d_radian + _c_m * _m_radian + _c_m_prime * _m_prime_radian + _c_f * _f_radian;
+            _sumB += _b * Math.Sin(_arg);
+        }
+        double _beta = _sumB / 1000000.0; // 度
 
         double _betaRadian = Degree2Radian(_beta);
 
-        // 黄赤交角
-        double _epsilon = 23.439291 - 0.0130042 * _t;
+        // 真黄赤交角 (True Obliquity)
+        double _epsilon = 23.439291 - 0.0130042 * _t + _dEpsilon;
         double _epsilonRadian = Degree2Radian(_epsilon);
 
         double _sinLambda = Math.Sin(_lambdaRadian);
@@ -720,6 +901,102 @@ public class AstronomyUtils
         // 这里只返回地心黄经（度）
         return NormalizeDegrees(_lambda);
     }
+
+    /// <summary>
+    /// 计算月地距离 (km)
+    /// </summary>
+    public static double GetMoonDistance(double _julianDay)
+    {
+        // 1. 儒略世纪（相对于 J2000.0）
+        double _t = (_julianDay - 2451545.0) / 36525.0;
+        double _t2 = _t * _t;
+        double _t3 = _t2 * _t;
+        double _t4 = _t3 * _t;
+
+        // 参数计算 (同经度计算)
+        double _d = 297.8501921 + 445267.1114034 * _t - 0.0018819 * _t2 + _t3 / 545868.0 - _t4 / 113065000.0;
+        double _m = 357.5291092 + 35999.0502909 * _t - 0.0001536 * _t2 + _t3 / 24490000.0;
+        double _m_prime = 134.9633964 + 477198.8675055 * _t + 0.0087414 * _t2 + _t3 / 69699.0 - _t4 / 14712000.0;
+        double _f = 93.2720950 + 483202.0175233 * _t - 0.0036539 * _t2 - _t3 / 3526000.0 + _t4 / 863310000.0;
+
+        _d = Degree2Radian(NormalizeDegrees(_d));
+        _m = Degree2Radian(NormalizeDegrees(_m));
+        _m_prime = Degree2Radian(NormalizeDegrees(_m_prime));
+        _f = Degree2Radian(NormalizeDegrees(_f));
+
+        double _sumR = 0.0;
+        for (int i = 0; i < MoonDistanceData.GetLength(0); i++)
+        {
+            int _c_d = MoonDistanceData[i, 0];
+            int _c_m = MoonDistanceData[i, 1];
+            int _c_m_prime = MoonDistanceData[i, 2];
+            int _c_f = MoonDistanceData[i, 3];
+            int _r = MoonDistanceData[i, 4];
+
+            double _arg = _c_d * _d + _c_m * _m + _c_m_prime * _m_prime + _c_f * _f;
+            _sumR += _r * Math.Cos(_arg);
+        }
+
+        return 385000.56 + _sumR;
+    }
+    #endregion
+
+    #region 岁差与章动
+    /// <summary>
+    /// 计算章动（经度章动 Δψ，交角章动 Δε）
+    /// </summary>
+    /// <param name="_julianDay">儒略日 (TD)</param>
+    /// <returns>Tuple (DeltaPsi, DeltaEpsilon) 单位：度</returns>
+    public static (double DeltaPsi, double DeltaEpsilon) GetNutation(double _julianDay)
+    {
+        double _t = (_julianDay - 2451545.0) / 36525.0;
+        double _t2 = _t * _t;
+        double _t3 = _t2 * _t;
+
+        // 升交点黄经 Omega
+        double _omega = 125.04452 - 1934.136261 * _t + 0.0020708 * _t2 + _t3 / 450000.0;
+        // 太阳平黄经 L
+        double _l = 280.4665 + 36000.7698 * _t;
+        // 月亮平黄经 L'
+        double _l_prime = 218.3165 + 481267.8813 * _t;
+
+        _omega = Degree2Radian(NormalizeDegrees(_omega));
+        _l = Degree2Radian(NormalizeDegrees(_l));
+        _l_prime = Degree2Radian(NormalizeDegrees(_l_prime));
+
+        // 章动主要项 (IAU 1980 简化，单位：角秒)
+        double _dPsi = -17.20 * Math.Sin(_omega)
+                       - 1.32 * Math.Sin(2 * _l)
+                       - 0.23 * Math.Sin(2 * _l_prime)
+                       + 0.21 * Math.Sin(2 * _omega);
+
+        double _dEpsilon = 9.20 * Math.Cos(_omega)
+                         + 0.57 * Math.Cos(2 * _l)
+                         + 0.10 * Math.Cos(2 * _l_prime)
+                         - 0.09 * Math.Cos(2 * _omega);
+
+        // 转度
+        return (_dPsi / 3600.0, _dEpsilon / 3600.0);
+    }
+
+    /// <summary>
+    /// 计算平黄赤交角 ε0 (Mean Obliquity of Ecliptic)
+    /// </summary>
+    public static double GetMeanObliquity(double _julianDay)
+    {
+        double _t = (_julianDay - 2451545.0) / 36525.0;
+        return 23.4392911 - 0.0130042 * _t - 0.00000016 * _t * _t + 0.000000504 * _t * _t * _t;
+    }
+
+    /// <summary>
+    /// 计算真黄赤交角 ε (True Obliquity)
+    /// </summary>
+    public static double GetTrueObliquity(double _julianDay)
+    {
+        double _epsilon0 = GetMeanObliquity(_julianDay);
+        (_, double _deltaEpsilon) = GetNutation(_julianDay);
+        return _epsilon0 + _deltaEpsilon;
+    }
     #endregion
 
     #region 赤道坐标 → 水平坐标 & LST
@@ -735,8 +1012,8 @@ public class AstronomyUtils
     {
         double _latRadian = Degree2Radian(_latitudeDegress);
 
-        // 地方恒星时（度）
-        double _lstDegree = GetLocalSiderealTime(_julianDay, _longitudeDegree);
+        // 地方视恒星时（度）
+        double _lstDegree = GetLocalApparentSiderealTime(_julianDay, _longitudeDegree);
         double _lstRadian = Degree2Radian(_lstDegree);
 
         double _raRadian = Degree2Radian(_ePosition.RightAscension);
@@ -771,22 +1048,30 @@ public class AstronomyUtils
     }
 
     /// <summary>
-    /// 计算地方恒星时（度）
-    /// longitudeDeg：东经为正
+    /// 计算地方视恒星时（度）(Local Apparent Sidereal Time)
+    /// 包含分点岁差（GMST）和分点章动（Equation of the Equinoxes）
     /// </summary>
-    private static double GetLocalSiderealTime(double _julianDay, double _longitudeDegree)
+    private static double GetLocalApparentSiderealTime(double _julianDayUt, double _longitudeDegree)
     {
-        double T = (_julianDay - 2451545.0) / 36525.0;
+        double T = (_julianDayUt - 2451545.0) / 36525.0;
 
         // Greenwich Mean Sidereal Time (GMST) in degrees
+        // IAU 1982 expression
         double theta0 = 280.46061837
-                      + 360.98564736629 * (_julianDay - 2451545.0)
+                      + 360.98564736629 * (_julianDayUt - 2451545.0)
                       + 0.000387933 * T * T
                       - T * T * T / 38710000.0;
 
-        // Local Sidereal Time
-        double _lst = theta0 + _longitudeDegree;
-        return NormalizeDegrees(_lst);
+        // 计算分点章动 (Equation of the Equinoxes)
+        // EqEq = DeltaPsi * cos(TrueObliquity)
+        (double _dPsi, double _dEpsilon) = GetNutation(_julianDayUt); // 忽略 UT/TT 差异对章动的影响
+        double _epsilon = 23.439291 - 0.0130042 * T + _dEpsilon;
+
+        double _eqEq = _dPsi * Math.Cos(Degree2Radian(_epsilon));
+
+        // Local Apparent Sidereal Time = GMST + EqEq + Longitude
+        double _last = theta0 + _eqEq + _longitudeDegree;
+        return NormalizeDegrees(_last);
     }
     #endregion
 
@@ -819,6 +1104,63 @@ public class AstronomyUtils
     #endregion
 
     #region 月球轨道数据
+    private static readonly int[,] MoonLatitudeData = new int[,]
+    {
+        // D, M, M', F,  b (10^-6 deg)
+        {0, 0, 0, 1, 5128122},
+        {0, 0, 1, 1, 280602},
+        {0, 0, 1, -1, 277693},
+        {2, 0, 0, -1, 173237},
+        {2, 0, 0, 1, 55413},
+        {2, 0, -1, 1, 46271},
+        {2, 0, -1, -1, 32573},
+        {0, 0, 2, 1, 17198},
+        {2, 0, 1, -1, 9266},
+        {0, 0, 2, -1, 8822},
+        {2, -1, 0, -1, 8216},
+        {2, 0, -2, -1, 4324},
+        {2, 0, 1, 1, 4200},
+        {2, 1, 0, -1, -3359},
+        {2, -1, -1, 1, 2463},
+        {2, -1, 0, 1, 2211},
+        {2, -1, -1, -1, 2065},
+        {0, 1, -1, -1, -1870},
+        {4, 0, -1, -1, 1828},
+        {-2, 0, 0, 1, -1794},
+        {-2, 0, 1, 1, -1749},
+        {0, 1, 0, 1, -1565},
+        {4, 0, -1, 1, 1491},
+        {0, 1, 1, 1, -1475},
+        {2, 0, 2, -1, -1410},
+        {2, 1, -1, -1, -1344},
+        {1, 0, 0, 1, -1335},
+        {4, 0, -2, 1, 1107},
+        {4, 0, -2, -1, 1021},
+        {0, 1, 1, -1, 833}
+    };
+
+    private static readonly int[,] MoonDistanceData = new int[,]
+    {
+        {0,  0,  1,  0, -20905},
+        {2,  0, -1,  0,  -3699},
+        {2,  0,  0,  0,  -2956},
+        {0,  0,  2,  0,   -570},
+        {2,  0, -2,  0,    246},
+        {2,  0,  0, -2,   -205},
+        {2, -1, -1,  0,   -171},
+        {2,  0,  1,  0,   -152},
+        {2, -1,  0,  0,   -130},
+        {0,  1, -1,  0,   -112},
+        {1,  0,  0,  0,   -105},
+        {0,  1,  1,  0,    -80},
+        {2,  0, -1,  2,     62},
+        {0,  0,  1,  2,    -58},
+        {2,  0,  1, -2,    -35},
+        {2,  0,  0,  2,    -31},
+        {4,  0, -1,  0,    -30},
+        {0,  0,  3,  0,    -25}
+    };
+
     private static readonly int[,] MoonLongitudeData = new int[,]
     {
         // D,  M,  M', F,    l (10^-6 deg)

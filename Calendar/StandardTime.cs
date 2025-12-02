@@ -200,8 +200,6 @@ public class StandardTime
     {
         double _newMoon = AstronomyUtils.CalculateNewMoonJulianDay(_julianDay);
         StandardTime _time = new(_newMoon);
-        //if (_time.Second >= 30) { _time = _time.AddMinutes(1); }
-        //_time.Second = 0;
         return _time;
     }
 
@@ -211,17 +209,85 @@ public class StandardTime
     public static StandardTime PrevNewMoon(double _julianDay) => NearestNewMoon(_julianDay - SynodicMonth);
     public StandardTime PrevNewMoon() => PrevNewMoon(this.ToJulianDay());
 
-    public StandardTime Sunrise(double _latitudeDegree, double _longitudeDegree)
+    public StandardTime CalculateSunRise(double _latitudeDegree, double _longitudeDegree, double _altitudeMeters = 0.0)
     {
         double _jd = this.ToJulianDay();
-        AstronomyUtils.RiseSetResult _result = AstronomyUtils.FindSunRiseSet(_jd, _latitudeDegree, _longitudeDegree, true, -0.833);
+        // 海拔导致的地平线俯角修正：0.0293 * sqrt(h)
+        double _dip = 0.0293 * Math.Sqrt(_altitudeMeters);
+        double _standardAltitude = -0.8333333333 - _dip; // 使用更精确的 -50/60 度
+
+        AstronomyUtils.SunMoonEventResult _result = AstronomyUtils.CalculateSunEvent(AstronomyUtils.SunMoonEventType.Rise,
+                                                                                     _jd,
+                                                                                     _latitudeDegree,
+                                                                                     _longitudeDegree,
+                                                                                     _standardAltitude);
         return new StandardTime(_result.JulianDay, this.TimezoneOffset);
     }
 
-    public StandardTime Sunset(double _latitudeDegree, double _longitudeDegree)
+    public StandardTime CalculateSunSet(double _latitudeDegree, double _longitudeDegree, double _altitudeMeters = 0.0)
     {
         double _jd = this.ToJulianDay();
-        AstronomyUtils.RiseSetResult _result = AstronomyUtils.FindSunRiseSet(_jd, _latitudeDegree, _longitudeDegree, false, -0.833);
+        // 海拔导致的地平线俯角修正
+        double _dip = 0.0293 * Math.Sqrt(_altitudeMeters);
+        double _standardAltitude = -0.8333333333 - _dip;
+
+        AstronomyUtils.SunMoonEventResult _result = AstronomyUtils.CalculateSunEvent(AstronomyUtils.SunMoonEventType.Set,
+                                                                                     _jd,
+                                                                                     _latitudeDegree,
+                                                                                     _longitudeDegree,
+                                                                                     _standardAltitude);
+        return new StandardTime(_result.JulianDay, this.TimezoneOffset);
+    }
+
+    public StandardTime CalculateSunTransit(double _latitudeDegree, double _longitudeDegree)
+    {
+        double _jd = this.ToJulianDay();
+        AstronomyUtils.SunMoonEventResult _result = AstronomyUtils.CalculateSunEvent(AstronomyUtils.SunMoonEventType.Transit,
+                                                                                     _jd,
+                                                                                     _latitudeDegree,
+                                                                                     _longitudeDegree);
+        return new StandardTime(_result.JulianDay, this.TimezoneOffset);
+    }
+
+    public StandardTime CalculateMoonRise(double _latitudeDegree, double _longitudeDegree, double _altitudeMeters = 0.0)
+    {
+        double _jd = this.ToJulianDay();
+        // 海拔导致的地平线俯角修正
+        double _dip = 0.0293 * Math.Sqrt(_altitudeMeters);
+        // 传递给 AstronomyUtils 的“标准高度”现在只包含 Dip 部分的负值（几何地平线修正）
+        // 视差、视半径、折射都在 CalculateMoonEvent 内部动态计算
+        double _dipCorrection = -_dip;
+
+        AstronomyUtils.SunMoonEventResult _result = AstronomyUtils.CalculateMoonEvent(AstronomyUtils.SunMoonEventType.Rise,
+                                                                                     _jd,
+                                                                                     _latitudeDegree,
+                                                                                     _longitudeDegree,
+                                                                                     _dipCorrection);
+        return new StandardTime(_result.JulianDay, this.TimezoneOffset);
+    }
+
+    public StandardTime CalculateMoonSet(double _latitudeDegree, double _longitudeDegree, double _altitudeMeters = 0.0)
+    {
+        double _jd = this.ToJulianDay();
+        // 海拔导致的地平线俯角修正
+        double _dip = 0.0293 * Math.Sqrt(_altitudeMeters);
+        double _dipCorrection = -_dip;
+
+        AstronomyUtils.SunMoonEventResult _result = AstronomyUtils.CalculateMoonEvent(AstronomyUtils.SunMoonEventType.Set,
+                                                                                     _jd,
+                                                                                     _latitudeDegree,
+                                                                                     _longitudeDegree,
+                                                                                     _dipCorrection);
+        return new StandardTime(_result.JulianDay, this.TimezoneOffset);
+    }
+
+    public StandardTime CalculateMoonTransit(double _latitudeDegree, double _longitudeDegree)
+    {
+        double _jd = this.ToJulianDay();
+        AstronomyUtils.SunMoonEventResult _result = AstronomyUtils.CalculateMoonEvent(AstronomyUtils.SunMoonEventType.Transit,
+                                                                                     _jd,
+                                                                                     _latitudeDegree,
+                                                                                     _longitudeDegree);
         return new StandardTime(_result.JulianDay, this.TimezoneOffset);
     }
 
