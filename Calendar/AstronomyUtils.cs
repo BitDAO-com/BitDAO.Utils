@@ -1075,6 +1075,54 @@ public class AstronomyUtils
     }
     #endregion
 
+    #region 时间方程
+    /// <summary>
+    /// 时间方程 Equation of Time（分钟）
+    /// 含义：TrueSolar - MeanSolar（分钟）
+    /// 传入 _julianDay：世界时 UT 的儒略日
+    /// </summary>
+    public static double EquationOfTimeMinutes(double _julianDay)
+    {
+        // 1. UT -> TT（力学时），保证与其它太阳/月亮计算一致
+        double _deltaTSeconds = EstimateDeltaT(_julianDay);
+        double _deltaTDays = _deltaTSeconds / 86400.0;
+        double _julianDayTt = _julianDay + _deltaTDays;
+
+        // 2. 儒略世纪数（相对 J2000.0），用 TT
+        double _t = (_julianDayTt - 2451545.0) / 36525.0;
+        double _t2 = _t * _t;
+
+        // 3. 太阳几何平均黄经 L0（度）——和 GetSunEclipticLongitude 内部一致
+        double _l0 = 280.46646 + 36000.76983 * _t + 0.0003032 * _t2;
+        _l0 = NormalizeDegrees(_l0);
+
+        // 4. 太阳视黄经 λ_app（度）——直接复用你的高精度函数
+        double _lambdaApp = GetSunEclipticLongitude(_julianDayTt); // 已含岁差/章动/光行差修正
+
+        // 5. 真黄赤交角 ε（度）
+        double _epsilon = GetTrueObliquity(_julianDayTt);
+
+        // 6. 由 λ_app 和 ε 计算太阳视赤经 α（度）
+        double _lambdaRad = Degree2Radian(_lambdaApp);
+        double _epsilonRad = Degree2Radian(_epsilon);
+
+        double _y = Math.Cos(_epsilonRad) * Math.Sin(_lambdaRad);
+        double _x = Math.Cos(_lambdaRad);
+        double _alphaRad = Math.Atan2(_y, _x);
+        double _alpha = NormalizeDegrees(Radian2Degree(_alphaRad)); // 0..360°
+
+        // 7. 章动 Δψ（度）
+        (double _deltaPsi, _) = GetNutation(_julianDayTt);
+
+        // 8. EoT（度）：Meeus 定义式
+        double _eDeg = _l0 - 0.0057183 - _alpha + _deltaPsi * Math.Cos(_epsilonRad);
+        _eDeg = Angle2Degree180(_eDeg); // 规约到 -180..+180，方便后面乘 4
+
+        // 9. 角度 -> 时间：1° = 4 分钟
+        return 4.0 * _eDeg;
+    }
+    #endregion
+
     #region 工具函数: 工具函数：角度 / 弧度 / 归一化
     public static double Degree2Radian(double _degree) => Math.PI / 180.0 * _degree;
     public static double Radian2Degree(double _radian) => 180.0 / Math.PI * _radian;
@@ -1101,6 +1149,8 @@ public class AstronomyUtils
         if (_degree <= -180.0) _degree += 360.0;
         return _degree;
     }
+
+
     #endregion
 
     #region 月球轨道数据
@@ -1225,5 +1275,34 @@ public class AstronomyUtils
         {2,  0,  3,  0,     294,         0},
         {2,  0, -1, -2,       0,      8752},
     };
+    #endregion
+
+    #region 度分秒转换
+    /// <summary>
+    /// 将度分秒转换为小数度
+    /// </summary>
+    /// <param name="_degrees">度</param>
+    /// <param name="_minutes">分</param>
+    /// <param name="_seconds">秒</param>
+    /// <returns>小数度</returns>
+    public static double DMS2DD(int _degrees, int _minutes, double _seconds)
+    {
+        double _result = Math.Abs(_degrees) + _minutes / 60.0 + _seconds / 3600.0;
+        return _degrees < 0 ? -_result : _result;
+    }
+
+    /// <summary>
+    /// 将小数度转换为度分秒
+    /// </summary>
+    /// <param name="_dd">小数度</param>
+    /// <returns>度分秒数组</returns>
+    public static int[] DD2DMS(double _dd)
+    {
+        double _abs = Math.Abs(_dd);
+        int _d = (int)_abs;
+        int _m = (int)((_abs - _d) * 60);
+        int _s = (int)((_abs - _d - _m / 60.0) * 3600);
+        return new int[] { _dd < 0 ? -_d : _d, _m, _s };
+    }
     #endregion
 }
