@@ -21,6 +21,8 @@ public class NongLiTime
         StandardTime = _standardTime;
     }
 
+    public static NongLiTime FromStandardTime(StandardTime _standardTime) => NongLiUtils.JulianDay2NongLiTime(_standardTime.JulianDay, _standardTime);
+
     public string NianName => $"{this.Nian}年";
 
     public string YueName => $"{(this.IsLeapMonth ? "闰" : "")}{NongLiUtils.Yue[this.Yue - 1]}月";

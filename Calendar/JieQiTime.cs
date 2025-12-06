@@ -5,6 +5,8 @@ namespace BitDAO.Utils.Calendar;
 public class JieQiTime : StandardTime
 {
     public int Index;
+    public string Name => NongLiUtils.JieQi[this.Index];
+
     public JieQiTime(double _julianDay, int _index, StandardTime _standardTime = null) : base(_julianDay)
     {
         this.Index = _index;
